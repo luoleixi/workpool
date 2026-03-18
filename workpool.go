@@ -3,8 +3,10 @@ package workpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
-	"workpool/pkg/pool"
+	"sync/atomic"
+	"time"
 )
 
 var (
@@ -33,23 +35,72 @@ type Pool interface {
 
 type DefaultPool struct {
 	options   Options
-	taskQueue chan Task
+	taskQueue chan Task // 任务中转站
 
-	capacity      int32 //最大容量
-	runningWorker int32 //当前运行中的Worker数量
-	state         int32 //池子状态
+	// 2. 状态控制（使用原子操作，尽量减少锁竞争）
+	capacity      int32 // 最大容量 (MaxWorkers)
+	runningWorker int32 // 当前活跃的 Goroutine 数量
+	activeTasks   int32 // 真正正在执行任务的协程数 (新增)
+	state         int32 // 池子状态：RUNNING / STOPPED
 
-	lock    sync.Locker        //保护内部Worker 列表
-	workers []*pool.WorkerPool //内部Worker 列表
+	// 3. Worker 管理与生命周期
+	workerCache sync.Pool
 
-	cond *sync.Cond
+	// 4. 优雅退出与同步
+	wg   sync.WaitGroup // 等待所有 Worker 退出
+	once sync.Once      // 确保 Release 只执行一次
+
+	//lock         sync.Mutex
+	//readyWorkers []*InternalWorker
 }
 
 func (p *DefaultPool) Submit(task Task) error {
-	return nil
+	if atomic.LoadInt32(&p.state) == STOPPED {
+		return ErrPoolClosed
+	}
+	select {
+	case p.taskQueue <- task:
+		p.conditionallySpawnWorker()
+		return nil
+	default:
+		if p.options.RejectPolicy != nil {
+			p.options.RejectPolicy(task, p)
+		}
+		return ErrPoolFull
+	}
 }
 
 func (p *DefaultPool) conditionallySpawnWorker() {
+	if atomic.LoadInt32(&p.runningWorker) < int32(p.options.MaxWorkers) {
+		if atomic.AddInt32(&p.runningWorker, 1) <= int32(p.options.MaxWorkers) {
+			p.wg.Add(1)
+			go p.workerLoop()
+		} else {
+			// 如果并发争抢导致超过了 Max，再减回来
+			atomic.AddInt32(&p.runningWorker, -1)
+		}
+	}
+}
+
+func (p *DefaultPool) workerLoop() {
+	defer p.wg.Done()
+	defer atomic.AddInt32(&p.runningWorker, -1)
+
+	for {
+		select {
+		case task, ok := <-p.taskQueue:
+			if !ok {
+				return
+			}
+			//执行任务并处理 Panic
+			p.runTask(task)
+		case <-time.After(p.options.ExpiryTime):
+			//空间超时自动回收协程
+			if len(p.taskQueue) == 0 {
+				return
+			}
+		}
+	}
 
 }
 
@@ -59,8 +110,11 @@ func (p *DefaultPool) SubmitWithContext(ctx context.Context, task Task) error {
 }
 
 func (p *DefaultPool) Release() {
-	//TODO implement me
-	panic("implement me")
+	p.once.Do(func() {
+		atomic.StoreInt32(&p.state, STOPPED)
+		close(p.taskQueue)
+		p.wg.Wait()
+	})
 }
 
 func (p *DefaultPool) Reboot() {
@@ -69,18 +123,19 @@ func (p *DefaultPool) Reboot() {
 }
 
 func (p *DefaultPool) WaitingTasks() int {
-	//TODO implement me
-	panic("implement me")
+	return len(p.taskQueue)
+}
+
+func (p *DefaultPool) RunningWorkers() int {
+	return int(atomic.LoadInt32(&p.runningWorker))
 }
 
 func (p *DefaultPool) RunningTasks() int {
-	//TODO implement me
-	panic("implement me")
+	return int(atomic.LoadInt32(&p.activeTasks))
 }
 
 func (p *DefaultPool) Cap() int {
-	//TODO implement me
-	panic("implement me")
+	return p.options.MaxWorkers
 }
 
 const (
@@ -104,7 +159,6 @@ func NewPool(opts ...Option) (Pool, error) {
 		taskQueue: make(chan Task, options.QueueSize),
 		capacity:  int32(options.MaxWorkers),
 		state:     RUNNING,
-		lock:      &sync.Mutex{},
 	}
 
 	//预分配逻辑
@@ -114,4 +168,18 @@ func NewPool(opts ...Option) (Pool, error) {
 		}
 	}
 	return p, nil
+}
+
+func (p *DefaultPool) runTask(task Task) {
+	defer func() {
+		if r := recover(); r != nil {
+			if p.options.PanicHandler != nil {
+				p.options.PanicHandler(r)
+			} else {
+				fmt.Printf("workpool: internal panic recovered: %v\n", r)
+			}
+		}
+	}()
+	ctx := context.Background()
+	_ = task.Execute(ctx)
 }
