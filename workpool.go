@@ -83,7 +83,7 @@ func (p *DefaultPool) workerLoop() {
 			//执行任务并处理 Panic
 			p.runTask(task)
 		case <-time.After(p.options.ExpiryTime):
-			//空间超时自动回收协程
+			//超时且队列为空，销毁当前协程
 			if len(p.taskQueue) == 0 {
 				return
 			}
@@ -122,8 +122,25 @@ func (p *DefaultPool) Release() {
 }
 
 func (p *DefaultPool) Reboot() {
-	//TODO implement me
-	panic("implement me")
+	if atomic.CompareAndSwapInt32(&p.state, STOPPED, RUNNING) {
+		p.once = sync.Once{}
+		p.taskQueue = make(chan Task, p.options.QueueSize)
+		if p.options.PreAlloc {
+			p.preAllocWorkers()
+		}
+	}
+}
+
+func (p *DefaultPool) preAllocWorkers() {
+	for i := 0; i < p.options.MaxWorkers; i++ {
+		if atomic.AddInt32(&p.runningWorker, 1) <= int32(p.options.MaxWorkers) {
+			p.wg.Add(1)
+			go p.workerLoop()
+		} else {
+			atomic.AddInt32(&p.runningWorker, -1)
+			break
+		}
+	}
 }
 
 func (p *DefaultPool) WaitingTasks() int {
@@ -167,10 +184,9 @@ func NewPool(opts ...Option) (Pool, error) {
 
 	//预分配逻辑
 	if options.PreAlloc {
-		for i := 0; i < options.MaxWorkers; i++ {
-
-		}
+		p.preAllocWorkers()
 	}
+
 	return p, nil
 }
 
