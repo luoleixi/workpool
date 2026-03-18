@@ -55,19 +55,7 @@ type DefaultPool struct {
 }
 
 func (p *DefaultPool) Submit(task Task) error {
-	if atomic.LoadInt32(&p.state) == STOPPED {
-		return ErrPoolClosed
-	}
-	select {
-	case p.taskQueue <- task:
-		p.conditionallySpawnWorker()
-		return nil
-	default:
-		if p.options.RejectPolicy != nil {
-			p.options.RejectPolicy(task, p)
-		}
-		return ErrPoolFull
-	}
+	return p.SubmitWithContext(context.Background(), task)
 }
 
 func (p *DefaultPool) conditionallySpawnWorker() {
@@ -105,8 +93,24 @@ func (p *DefaultPool) workerLoop() {
 }
 
 func (p *DefaultPool) SubmitWithContext(ctx context.Context, task Task) error {
-	//TODO implement me
-	panic("implement me")
+	if atomic.LoadInt32(&p.state) == STOPPED {
+		return ErrPoolClosed
+	}
+	select {
+	//调用方的 Context 超时了或被取消了
+	case <-ctx.Done():
+		return ctx.Err()
+	//成功塞入队列
+	case p.taskQueue <- task:
+		p.conditionallySpawnWorker()
+		return nil
+	//队列瞬间满了。非阻塞尝试
+	default:
+		if p.options.RejectPolicy != nil {
+			p.options.RejectPolicy(task, p)
+		}
+		return ErrPoolFull
+	}
 }
 
 func (p *DefaultPool) Release() {
