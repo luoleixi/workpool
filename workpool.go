@@ -59,13 +59,16 @@ func (p *DefaultPool) Submit(task Task) error {
 }
 
 func (p *DefaultPool) conditionallySpawnWorker() {
-	if atomic.LoadInt32(&p.runningWorker) < int32(p.options.MaxWorkers) {
-		if atomic.AddInt32(&p.runningWorker, 1) <= int32(p.options.MaxWorkers) {
+	run := atomic.LoadInt32(&p.runningWorker)
+	if run >= p.capacity {
+		return
+	}
+
+	//当前没有协程在运行 或 队列中有积压任务且有扩容空间，触发扩容
+	if run == 0 || len(p.taskQueue) > 0 {
+		if atomic.CompareAndSwapInt32(&p.runningWorker, run, run+1) {
 			p.wg.Add(1)
 			go p.workerLoop()
-		} else {
-			// 如果并发争抢导致超过了 Max，再减回来
-			atomic.AddInt32(&p.runningWorker, -1)
 		}
 	}
 }
@@ -83,7 +86,7 @@ func (p *DefaultPool) workerLoop() {
 			//执行任务并处理 Panic
 			p.runTask(task)
 		case <-time.After(p.options.ExpiryTime):
-			//超时且队列为空，销毁当前协程
+			//动态缩容，如果超时无任务，且队列为空。销毁协程
 			if len(p.taskQueue) == 0 {
 				return
 			}
