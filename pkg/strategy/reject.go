@@ -10,10 +10,17 @@ var (
 		// SubmitWithContext 会处理 ErrPoolFull
 	}
 	CallerRunsPolicy types.RejectionHandler = func(task types.Task, pool types.Pool) {
-		_ = task.Execute(context.Background())
+		if task != nil {
+			_ = task.Execute(context.Background())
+		}
 	}
 
 	DiscardPolicy types.RejectionHandler = func(task types.Task, pool types.Pool) {
 		// 静默丢弃，什么都不做
+	}
+
+	DiscardOldestPolicy types.RejectionHandler = func(task types.Task, pool types.Pool) {
+		pool.DiscardOldest()
+		_ = pool.Submit(task)
 	}
 )

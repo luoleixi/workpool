@@ -104,3 +104,12 @@ func (p *DefaultPool) RunningTasks() int {
 func (p *DefaultPool) Cap() int {
 	return p.options.MaxWorkers
 }
+
+func (p *DefaultPool) DiscardOldest() {
+	select {
+	case <-p.taskQueue:
+		//成功弹出最老的任务并丢弃
+	default:
+		//如果队列为空，则什么都不做
+	}
+}

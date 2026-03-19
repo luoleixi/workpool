@@ -29,6 +29,10 @@ func (p *DefaultPool) runTask(task types.Task) {
 			}
 		}
 	}()
+
+	atomic.AddInt32(&p.activeTasks, 1)        // 任务开始
+	defer atomic.AddInt32(&p.activeTasks, -1) // 任务结束
+
 	ctx := context.Background()
 	_ = task.Execute(ctx)
 }

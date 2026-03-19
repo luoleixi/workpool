@@ -13,9 +13,9 @@ func main() {
 	// 1. 初始化池子
 	// 配置：最大 5 个协程，队列长度 10，空闲 3 秒缩容
 	p, err := workpool.NewPool(
-		workpool.WithMaxWorkers(5),
 		func(o *types.Options) {
 			o.ExpiryTime = time.Second // 关键：缩短过期时间
+			o.MaxWorkers = 5
 		},
 	)
 	if err != nil {

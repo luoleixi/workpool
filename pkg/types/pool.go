@@ -11,4 +11,6 @@ type Pool interface {
 	RunningTasks() int
 	RunningWorkers() int
 	Cap() int
+
+	DiscardOldest()
 }
