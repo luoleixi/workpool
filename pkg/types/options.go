@@ -13,13 +13,16 @@ const (
 
 type RejectionHandler func(task Task, pool Pool)
 type PanicHandler func(ctx context.Context, err interface{})
+type FailureHandler func(ctx context.Context, task Task, err error)
+
 type Options struct {
-	MaxWorkers   int
-	QueueSize    int
-	ExpiryTime   time.Duration
-	PreAlloc     bool //是否预分配
-	PanicHandler PanicHandler
-	RejectPolicy RejectionHandler
+	MaxWorkers     int
+	QueueSize      int
+	ExpiryTime     time.Duration
+	PreAlloc       bool //是否预分配
+	PanicHandler   PanicHandler
+	RejectPolicy   RejectionHandler
+	FailureHandler FailureHandler
 }
 type Option func(*Options)
 
@@ -32,6 +35,12 @@ func WithMaxWorkers(count int) Option {
 func WithPanicHandler(handler PanicHandler) Option {
 	return func(o *Options) {
 		o.PanicHandler = handler
+	}
+}
+
+func WithFailureHandler(handler FailureHandler) Option {
+	return func(o *Options) {
+		o.FailureHandler = handler
 	}
 }
 

@@ -1,6 +1,9 @@
 package types
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Pool interface {
 	Submit(task Task) error
@@ -11,6 +14,6 @@ type Pool interface {
 	RunningTasks() int
 	RunningWorkers() int
 	Cap() int
-
 	DiscardOldest()
+	ReleaseWithTimeout(timeout time.Duration) error
 }

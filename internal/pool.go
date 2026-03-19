@@ -2,8 +2,10 @@ package internal
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 	"workpool/pkg/types" // 替换为你的 go.mod 中的 module 名
 )
 
@@ -77,6 +79,20 @@ func (p *DefaultPool) Release() {
 		close(p.taskQueue)
 		p.wg.Wait()
 	})
+}
+
+func (p *DefaultPool) ReleaseWithTimeout(timeout time.Duration) error {
+	done := make(chan struct{})
+	go func() {
+		p.Release()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(timeout):
+		return fmt.Errorf("shutdown timed out")
+	}
 }
 
 func (p *DefaultPool) Reboot() {

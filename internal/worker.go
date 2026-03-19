@@ -20,11 +20,13 @@ func (p *DefaultPool) preAllocWorkers() {
 	}
 }
 func (p *DefaultPool) runTask(task types.Task) {
+	ctx := context.Background()
+
 	defer func() {
 		if r := recover(); r != nil { //捕获异常
 			if p.options.PanicHandler != nil {
 				//将异常转发给自定义处理器
-				p.options.PanicHandler(context.Background(), r)
+				p.options.PanicHandler(ctx, r)
 			} else {
 				//确保 Panic 不会消失
 				fmt.Printf("workpool: internal panic recovered: %v\n", r)
@@ -35,8 +37,11 @@ func (p *DefaultPool) runTask(task types.Task) {
 	atomic.AddInt32(&p.activeTasks, 1)        // 任务开始
 	defer atomic.AddInt32(&p.activeTasks, -1) // 任务结束
 
-	ctx := context.Background()
-	_ = task.Execute(ctx)
+	if err := task.Execute(ctx); err != nil {
+		if p.options.FailureHandler != nil {
+			p.options.FailureHandler(ctx, task, err)
+		}
+	}
 }
 
 func (p *DefaultPool) workerLoop() {
