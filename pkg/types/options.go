@@ -1,4 +1,4 @@
-package workpool
+package types
 
 import (
 	"runtime"
@@ -10,6 +10,7 @@ const (
 	defaultExpiry    = 60 * time.Second
 )
 
+type RejectionHandler func(task Task, pool Pool)
 type Options struct {
 	MaxWorkers   int
 	QueueSize    int
@@ -37,8 +38,7 @@ func DefaultOptions() Options {
 		MaxWorkers:   runtime.NumCPU() * 2,
 		QueueSize:    defaultQueueSize,
 		ExpiryTime:   defaultExpiry,
-		PreAlloc:     false,      //默认不分配
-		PanicHandler: nil,        //默认不处理
-		RejectPolicy: AborPolicy, //默认策略：拒绝并返回错误
+		PreAlloc:     false, //默认不分配
+		PanicHandler: nil,   //默认不处理
 	}
 }
