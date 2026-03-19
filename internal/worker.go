@@ -21,10 +21,12 @@ func (p *DefaultPool) preAllocWorkers() {
 }
 func (p *DefaultPool) runTask(task types.Task) {
 	defer func() {
-		if r := recover(); r != nil {
+		if r := recover(); r != nil { //捕获异常
 			if p.options.PanicHandler != nil {
-				p.options.PanicHandler(r)
+				//将异常转发给自定义处理器
+				p.options.PanicHandler(context.Background(), r)
 			} else {
+				//确保 Panic 不会消失
 				fmt.Printf("workpool: internal panic recovered: %v\n", r)
 			}
 		}
