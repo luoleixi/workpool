@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
-	"workpool/pkg/types"
 )
 
 func (p *DefaultPool) preAllocWorkers() {
@@ -19,8 +18,11 @@ func (p *DefaultPool) preAllocWorkers() {
 		}
 	}
 }
-func (p *DefaultPool) runTask(task types.Task) {
-	ctx := context.Background()
+func (p *DefaultPool) runTask(tw *taskWrapper) {
+	ctx := tw.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	defer func() {
 		if r := recover(); r != nil { //捕获异常
@@ -37,9 +39,9 @@ func (p *DefaultPool) runTask(task types.Task) {
 	atomic.AddInt32(&p.activeTasks, 1)        // 任务开始
 	defer atomic.AddInt32(&p.activeTasks, -1) // 任务结束
 
-	if err := task.Execute(ctx); err != nil {
+	if err := tw.task.Execute(ctx); err != nil {
 		if p.options.FailureHandler != nil {
-			p.options.FailureHandler(ctx, task, err)
+			p.options.FailureHandler(ctx, tw.task, err)
 		}
 	}
 }
@@ -58,6 +60,11 @@ func (p *DefaultPool) workerLoop() {
 				return
 			}
 			p.runTask(task)
+
+			task.task = nil
+			task.ctx = nil
+			p.workerCache.Put(task)
+
 			if !idleTimer.Stop() {
 				select {
 				case <-idleTimer.C:

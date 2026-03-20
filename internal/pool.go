@@ -16,7 +16,7 @@ const (
 
 type DefaultPool struct {
 	options   types.Options
-	taskQueue chan types.Task // 任务中转站
+	taskQueue chan *taskWrapper // 任务中转站
 
 	// 2. 状态控制（使用原子操作，尽量减少锁竞争）
 	capacity      int32 // 最大容量 (MaxWorkers)
@@ -35,13 +35,31 @@ type DefaultPool struct {
 	//readyWorkers []*InternalWorker
 }
 
+type taskWrapper struct {
+	task types.Task
+	ctx  context.Context
+}
+
+func (p *DefaultPool) initPools() {
+	p.workerCache = sync.Pool{
+		New: func() interface{} {
+			return &taskWrapper{}
+		},
+	}
+}
+
 func NewDefaultPool(opts types.Options) *DefaultPool {
 	p := &DefaultPool{
 		options:   opts,
-		taskQueue: make(chan types.Task, opts.QueueSize),
+		taskQueue: make(chan *taskWrapper, opts.QueueSize),
 		capacity:  int32(opts.MaxWorkers),
 		state:     RUNNING,
 	}
+
+	p.workerCache.New = func() interface{} {
+		return &taskWrapper{}
+	}
+
 	if opts.PreAlloc {
 		p.preAllocWorkers()
 	}
@@ -56,16 +74,23 @@ func (p *DefaultPool) SubmitWithContext(ctx context.Context, task types.Task) er
 	if atomic.LoadInt32(&p.state) == STOPPED {
 		return types.ErrPoolClosed
 	}
+
+	tw := p.workerCache.Get().(*taskWrapper)
+	tw.task = task
+	tw.ctx = ctx
+
 	select {
 	//调用方的 Context 超时了或被取消了
 	case <-ctx.Done():
+		p.workerCache.Put(tw)
 		return ctx.Err()
 	//成功塞入队列
-	case p.taskQueue <- task:
+	case p.taskQueue <- tw:
 		p.conditionallySpawnWorker()
 		return nil
 	//队列瞬间满了。非阻塞尝试
 	default:
+		p.workerCache.Put(tw)
 		if p.options.RejectPolicy != nil {
 			p.options.RejectPolicy(task, p)
 		}
@@ -98,7 +123,7 @@ func (p *DefaultPool) ReleaseWithTimeout(timeout time.Duration) error {
 func (p *DefaultPool) Reboot() {
 	if atomic.CompareAndSwapInt32(&p.state, STOPPED, RUNNING) {
 		p.once = sync.Once{}
-		p.taskQueue = make(chan types.Task, p.options.QueueSize)
+		p.taskQueue = make(chan *taskWrapper, p.options.QueueSize)
 		if p.options.PreAlloc {
 			p.preAllocWorkers()
 		}
