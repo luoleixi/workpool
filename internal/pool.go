@@ -48,6 +48,12 @@ func (p *DefaultPool) initPools() {
 	}
 }
 
+var stackPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 4096)
+	},
+}
+
 func NewDefaultPool(opts types.Options) *DefaultPool {
 	p := &DefaultPool{
 		options:   opts,

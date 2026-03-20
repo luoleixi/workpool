@@ -3,6 +3,7 @@ package internal
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -26,13 +27,19 @@ func (p *DefaultPool) runTask(tw *taskWrapper) {
 
 	defer func() {
 		if r := recover(); r != nil { //捕获异常
+
+			buf := stackPool.Get().([]byte) //获取堆栈缓冲
+			n := runtime.Stack(buf, false)  //捕获当前协程堆栈
+			stackInfo := buf[:n]
+
 			if p.options.PanicHandler != nil {
 				//将异常转发给自定义处理器
-				p.options.PanicHandler(ctx, r)
+				p.options.PanicHandler(ctx, r, stackInfo)
 			} else {
 				//确保 Panic 不会消失
 				fmt.Printf("workpool: internal panic recovered: %v\n", r)
 			}
+			stackPool.Put(buf)
 		}
 	}()
 
@@ -73,10 +80,18 @@ func (p *DefaultPool) workerLoop() {
 			}
 			idleTimer.Reset(p.options.ExpiryTime)
 		case <-idleTimer.C:
-			if len(p.taskQueue) == 0 {
-				return
+			select {
+			case tw, ok := <-p.taskQueue:
+				if ok {
+					p.runTask(tw)
+					tw.task = nil
+					tw.ctx = nil
+					p.workerCache.Put(tw)
+					idleTimer.Reset(p.options.ExpiryTime)
+					continue
+				}
+			default:
 			}
-			idleTimer.Reset(p.options.ExpiryTime)
 		}
 	}
 }
