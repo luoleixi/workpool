@@ -12,13 +12,15 @@ func (p *DefaultPool) preAllocWorkers() {
 	for i := 0; i < p.options.MaxWorkers; i++ {
 		if atomic.AddInt32(&p.runningWorker, 1) <= int32(p.options.MaxWorkers) {
 			p.wg.Add(1)
-			go p.workerLoop()
+			// 分配时均匀分布在分片上
+			go p.workerLoop(i)
 		} else {
 			atomic.AddInt32(&p.runningWorker, -1)
 			break
 		}
 	}
 }
+
 func (p *DefaultPool) runTask(tw *taskWrapper) {
 	ctx := tw.ctx
 	if ctx == nil {
@@ -26,25 +28,22 @@ func (p *DefaultPool) runTask(tw *taskWrapper) {
 	}
 
 	defer func() {
-		if r := recover(); r != nil { //捕获异常
-
-			buf := stackPool.Get().([]byte) //获取堆栈缓冲
-			n := runtime.Stack(buf, false)  //捕获当前协程堆栈
+		if r := recover(); r != nil {
+			buf := stackPool.Get().([]byte)
+			n := runtime.Stack(buf, false)
 			stackInfo := buf[:n]
 
 			if p.options.PanicHandler != nil {
-				//将异常转发给自定义处理器
 				p.options.PanicHandler(ctx, r, stackInfo)
 			} else {
-				//确保 Panic 不会消失
 				fmt.Printf("workpool: internal panic recovered: %v\n", r)
 			}
 			stackPool.Put(buf)
 		}
 	}()
 
-	atomic.AddInt32(&p.activeTasks, 1)        // 任务开始
-	defer atomic.AddInt32(&p.activeTasks, -1) // 任务结束
+	atomic.AddInt32(&p.activeTasks, 1)
+	defer atomic.AddInt32(&p.activeTasks, -1)
 
 	if err := tw.task.Execute(ctx); err != nil {
 		if p.options.FailureHandler != nil {
@@ -53,21 +52,25 @@ func (p *DefaultPool) runTask(tw *taskWrapper) {
 	}
 }
 
-func (p *DefaultPool) workerLoop() {
+func (p *DefaultPool) workerLoop(shardIdx int) {
 	defer p.wg.Done()
 	defer atomic.AddInt32(&p.runningWorker, -1)
+
+	// 绑定特定分片队列，极大降低锁竞争
+	queue := p.taskQueues[uint64(shardIdx)&p.shardMask]
 
 	idleTimer := time.NewTimer(p.options.ExpiryTime)
 	defer idleTimer.Stop()
 
 	for {
 		select {
-		case task, ok := <-p.taskQueue:
+		case task, ok := <-queue:
 			if !ok {
 				return
 			}
 			p.runTask(task)
 
+			// 清理并放回缓存
 			task.task = nil
 			task.ctx = nil
 			p.workerCache.Put(task)
@@ -80,29 +83,23 @@ func (p *DefaultPool) workerLoop() {
 			}
 			idleTimer.Reset(p.options.ExpiryTime)
 		case <-idleTimer.C:
-			select {
-			case tw, ok := <-p.taskQueue:
-				if ok {
-					p.runTask(tw)
-					tw.task = nil
-					tw.ctx = nil
-					p.workerCache.Put(tw)
-					idleTimer.Reset(p.options.ExpiryTime)
-					continue
-				}
-			default:
+			// 过期检查逻辑
+			if atomic.LoadInt32(&p.runningWorker) > int32(runtime.NumCPU()) {
+				return // 只有当 Worker 数超过 CPU 核数时才允许过期退出，保持基础吞吐
 			}
+			idleTimer.Reset(p.options.ExpiryTime)
 		}
 	}
 }
 
 func (p *DefaultPool) conditionallySpawnWorker() {
-	if atomic.LoadInt32(&p.runningWorker) < int32(p.options.MaxWorkers) {
-		if atomic.AddInt32(&p.runningWorker, 1) <= int32(p.options.MaxWorkers) {
+	curr := atomic.LoadInt32(&p.runningWorker)
+	if curr < int32(p.options.MaxWorkers) {
+		if n := atomic.AddInt32(&p.runningWorker, 1); n <= int32(p.options.MaxWorkers) {
 			p.wg.Add(1)
-			go p.workerLoop()
+			// 使用当前的 worker 计数作为索引，实现分片绑定
+			go p.workerLoop(int(n - 1))
 		} else {
-			// 如果并发争抢导致超过了 Max，再减回来
 			atomic.AddInt32(&p.runningWorker, -1)
 		}
 	}

@@ -12,7 +12,7 @@ const (
 )
 
 type RejectionHandler func(task Task, pool Pool)
-type PanicHandler func(ctx context.Context, err interface{})
+type PanicHandler func(ctx context.Context, err interface{}, stack []byte)
 type FailureHandler func(ctx context.Context, task Task, err error)
 
 type Options struct {
